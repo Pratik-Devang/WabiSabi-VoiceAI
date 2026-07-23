@@ -1,3 +1,4 @@
 {
-  "/workspace/page": "app/workspace/page.js"
+  "/workspace/page": "app/workspace/page.js",
+  "/voice/page": "app/voice/page.js"
 }
