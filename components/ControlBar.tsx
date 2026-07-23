@@ -1,95 +1,75 @@
-import { Mic, MicOff, PhoneOff, Volume2, VolumeX } from "lucide-react";
+import { Mic, MicOff, Pause, PhoneOff, Play, Volume2, VolumeX } from "lucide-react";
 
 type ControlBarProps = {
   muted: boolean;
+  paused: boolean;
   speakerOn: boolean;
   onToggleMute: () => void;
+  onTogglePause: () => void;
   onToggleSpeaker: () => void;
   onEndCall: () => void;
 };
 
 export default function ControlBar({
   muted,
+  paused,
   speakerOn,
   onToggleMute,
+  onTogglePause,
   onToggleSpeaker,
   onEndCall
 }: ControlBarProps) {
   return (
-    <div className="fixed inset-x-0 bottom-5 z-20 flex justify-center px-4 sm:bottom-8">
-      <div className="flex items-end gap-5 rounded-full border border-white/[0.08] bg-white/[0.04] px-5 py-4 sm:gap-7 sm:px-7">
-        <ControlButton
-          label={muted ? "Muted" : "Mic"}
-          isAlert={muted}
-          onClick={onToggleMute}
-          className="h-[52px] w-[52px]"
-          icon={
-            muted ? (
-              <MicOff className="h-5 w-5 text-red-300" aria-hidden="true" />
-            ) : (
-              <Mic className="h-5 w-5 text-white" aria-hidden="true" />
-            )
-          }
-        />
+    <div className="session-controls">
+      <ControlButton
+        label={muted ? "Unmute" : "Mute"}
+        active={muted}
+        onClick={onToggleMute}
+        icon={muted ? <MicOff size={19} /> : <Mic size={19} />}
+      />
 
-        <div className="flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={onEndCall}
-            aria-label="End call"
-            className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500 text-white transition hover:bg-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
-          >
-            <PhoneOff className="h-6 w-6" aria-hidden="true" />
-          </button>
-          <span className="h-4 text-xs font-medium text-[#8E8EA0]">End</span>
-        </div>
+      <ControlButton
+        label={paused ? "Resume voice input" : "Pause voice input"}
+        active={paused}
+        onClick={onTogglePause}
+        icon={paused ? <Play size={19} /> : <Pause size={19} />}
+      />
 
-        <ControlButton
-          label={speakerOn ? "Speaker" : "Off"}
-          isAlert={!speakerOn}
-          onClick={onToggleSpeaker}
-          className="h-[52px] w-[52px]"
-          icon={
-            speakerOn ? (
-              <Volume2 className="h-5 w-5 text-white" aria-hidden="true" />
-            ) : (
-              <VolumeX className="h-5 w-5 text-red-300" aria-hidden="true" />
-            )
-          }
-        />
-      </div>
+      <button className="end-control" type="button" onClick={onEndCall} aria-label="End session">
+        <span><PhoneOff size={22} /></span>
+        <small>End</small>
+      </button>
+
+      <ControlButton
+        label={speakerOn ? "Speaker" : "Speaker off"}
+        active={!speakerOn}
+        onClick={onToggleSpeaker}
+        icon={speakerOn ? <Volume2 size={19} /> : <VolumeX size={19} />}
+      />
     </div>
   );
 }
 
 function ControlButton({
   label,
-  isAlert,
+  active,
   onClick,
-  icon,
-  className
+  icon
 }: {
   label: string;
-  isAlert: boolean;
+  active: boolean;
   onClick: () => void;
   icon: React.ReactNode;
-  className: string;
 }) {
   return (
-    <div className="pb-6">
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={label}
-        title={label}
-        className={`${className} flex items-center justify-center rounded-full border transition focus:outline-none focus:ring-2 ${
-          isAlert
-            ? "border-red-400/45 bg-red-500/15 focus:ring-red-300"
-            : "border-white/[0.22] bg-white/[0.04] hover:bg-white/[0.08] focus:ring-white/60"
-        }`}
-      >
-        {icon}
-      </button>
-    </div>
+    <button
+      type="button"
+      className={`round-control ${active ? "active" : ""}`}
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
+      {icon}
+    </button>
   );
 }

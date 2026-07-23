@@ -1,9 +1,9 @@
 {
   "pages": {
-    "/voice/page": [
+    "/workspace/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/voice/page.js"
+      "static/chunks/app/workspace/page.js"
     ],
     "/layout": [
       "static/chunks/webpack.js",

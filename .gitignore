@@ -3,6 +3,7 @@
 
 # next.js build output
 /.next
+/.next-build
 /out
 
 # production
@@ -24,6 +25,15 @@ pnpm-debug.log*
 # misc
 .DS_Store
 Thumbs.db
+
+# reference and backend runtime data
+_reference/
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/chroma_data/*
+!backend/chroma_data/.gitkeep
+*.py[cod]
 
 # typescript
 *.tsbuildinfo
