@@ -9,13 +9,13 @@ import {
   Headphones,
   LogOut,
   Mic2,
-  MoreHorizontal,
   Plus,
   Radio,
   Settings,
   Sparkles
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import SessionActions from "@/components/SessionActions";
 import {
   beginSession,
   formatDuration,
@@ -84,7 +84,9 @@ export default function WorkspacePage() {
 
         <nav aria-label="Workspace navigation">
           <button className="active"><Sparkles size={15} /> Overview</button>
-          <button><FileText size={15} /> Transcripts</button>
+          <button onClick={() => router.push("/workspace/transcripts")}>
+            <FileText size={15} /> Transcripts
+          </button>
           <button><Settings size={15} /> Settings</button>
         </nav>
 
@@ -130,11 +132,23 @@ export default function WorkspacePage() {
           <section className="workspace-card recent-card">
             <header>
               <div><p>History</p><h2>Recent sessions</h2></div>
-              <button>View all <ArrowRight size={14} /></button>
+              <button onClick={() => router.push("/workspace/transcripts")}>
+                View all <ArrowRight size={14} />
+              </button>
             </header>
             <div className="recent-list">
-              {sessions.slice(0, 3).map((session, index) => (
-                <article key={session.id}>
+              {sessions.slice(0, 4).map((session, index) => (
+                <article
+                  key={session.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => router.push(`/workspace/session/${session.id}`)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      router.push(`/workspace/session/${session.id}`);
+                    }
+                  }}
+                >
                   <div className={`recent-icon tone-${index}`}><AudioLines size={17} /></div>
                   <div>
                     <h3>{session.title}</h3>
@@ -149,7 +163,20 @@ export default function WorkspacePage() {
                     <span>{formatDuration(session.durationSeconds)}</span>
                     <span>{session.transcript.length} lines</span>
                   </div>
-                  <button aria-label={`More options for ${session.title}`}><MoreHorizontal size={17} /></button>
+                  <SessionActions
+                    accountEmail={account.email}
+                    session={session}
+                    onRenamed={(updated) =>
+                      setSessions((items) =>
+                        items.map((item) => item.id === updated.id ? updated : item)
+                      )
+                    }
+                    onDeleted={(sessionId) =>
+                      setSessions((items) =>
+                        items.filter((item) => item.id !== sessionId)
+                      )
+                    }
+                  />
                 </article>
               ))}
               {sessions.length === 0 && (

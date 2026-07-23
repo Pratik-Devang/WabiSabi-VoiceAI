@@ -36,6 +36,68 @@ export function getSessions(accountEmail: string): VoiceSession[] {
     );
 }
 
+export function getSession(
+  accountEmail: string,
+  sessionId: string
+): VoiceSession | null {
+  return (
+    getSessions(accountEmail).find((session) => session.id === sessionId) ?? null
+  );
+}
+
+export function appendSessionTranscript(
+  accountEmail: string,
+  sessionId: string,
+  entries: TranscriptEntry[]
+): VoiceSession | null {
+  const sessions = readJson<VoiceSession[]>(SESSIONS_KEY, []);
+  const index = sessions.findIndex(
+    (session) =>
+      session.id === sessionId && session.accountEmail === accountEmail
+  );
+  if (index < 0) return null;
+  const updated = {
+    ...sessions[index],
+    transcript: [...sessions[index].transcript, ...entries]
+  };
+  sessions[index] = updated;
+  window.localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  return updated;
+}
+
+export function renameSession(
+  accountEmail: string,
+  sessionId: string,
+  title: string
+): VoiceSession | null {
+  const cleanTitle = title.trim().slice(0, 80);
+  if (!cleanTitle) return null;
+  const sessions = readJson<VoiceSession[]>(SESSIONS_KEY, []);
+  const index = sessions.findIndex(
+    (session) =>
+      session.id === sessionId && session.accountEmail === accountEmail
+  );
+  if (index < 0) return null;
+  const updated = { ...sessions[index], title: cleanTitle };
+  sessions[index] = updated;
+  window.localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  return updated;
+}
+
+export function deleteSession(
+  accountEmail: string,
+  sessionId: string
+): boolean {
+  const sessions = readJson<VoiceSession[]>(SESSIONS_KEY, []);
+  const remaining = sessions.filter(
+    (session) =>
+      !(session.id === sessionId && session.accountEmail === accountEmail)
+  );
+  if (remaining.length === sessions.length) return false;
+  window.localStorage.setItem(SESSIONS_KEY, JSON.stringify(remaining));
+  return true;
+}
+
 export function beginSession(accountEmail: string): VoiceSession {
   const existing = readJson<VoiceSession | null>(ACTIVE_SESSION_KEY, null);
   if (existing?.accountEmail === accountEmail) return existing;
@@ -72,6 +134,9 @@ export function finishSession(transcript: TranscriptEntry[]): VoiceSession | nul
   const endedAt = new Date();
   const completed: VoiceSession = {
     ...active,
+    title:
+      transcript.find((entry) => entry.speaker === "You")?.text.slice(0, 48) ||
+      "Voice conversation",
     endedAt: endedAt.toISOString(),
     durationSeconds: Math.max(
       1,

@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -29,6 +30,7 @@ log = logging.getLogger("vox.live")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 LIVE_MODEL = os.getenv("LIVE_MODEL", "gemini-3.1-flash-live-preview")
+FOLLOWUP_MODEL = os.getenv("FOLLOWUP_MODEL", "gemini-3.6-flash")
 VOICE_NAME = os.getenv("VOICE_NAME", "Kore")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
 COMPRESSION_TRIGGER_TOKENS = int(
@@ -114,6 +116,64 @@ async def rag_refresh() -> dict:
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class FollowUpLine(BaseModel):
+    speaker: str
+    text: str
+
+
+class FollowUpRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    transcript: list[FollowUpLine] = Field(default_factory=list, max_length=250)
+
+
+class FollowUpResponse(BaseModel):
+    answer: str
+    sources: list[str] = Field(default_factory=list)
+
+
+@app.post("/chat/follow-up", response_model=FollowUpResponse)
+async def chat_follow_up(payload: FollowUpRequest) -> FollowUpResponse:
+    """Answer against one saved conversation and persist on the client."""
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured.")
+
+    hits = await asyncio.to_thread(rag.search, payload.question)
+    conversation = "\n".join(
+        f"{line.speaker}: {line.text}" for line in payload.transcript
+    )
+    retrieved = "\n\n".join(
+        f"Source: {hit.get('source')}\n{hit.get('text')}" for hit in hits
+    )
+    prompt = (
+        "Continue the saved Vox conversation below. Answer the follow-up in a "
+        "concise, conversational style. Preserve context from the transcript. "
+        "For insurance facts, use the retrieved knowledge and do not invent "
+        "details. If the evidence does not answer the question, say so.\n\n"
+        f"SAVED CONVERSATION:\n{conversation or '(empty)'}\n\n"
+        f"RETRIEVED KNOWLEDGE:\n{retrieved or '(no matching records)'}\n\n"
+        f"FOLLOW-UP QUESTION:\n{payload.question}"
+    )
+
+    def generate() -> str:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=FOLLOWUP_MODEL,
+            contents=prompt,
+        )
+        return response.text or "I could not generate a follow-up response."
+
+    try:
+        answer = await asyncio.to_thread(generate)
+    except Exception as exc:
+        log.exception("Follow-up generation failed")
+        raise HTTPException(status_code=502, detail="Follow-up generation failed.") from exc
+
+    sources = sorted(
+        {hit.get("source") for hit in hits if hit.get("source")}
+    )
+    return FollowUpResponse(answer=answer, sources=sources)
 
 
 def system_instruction() -> str:

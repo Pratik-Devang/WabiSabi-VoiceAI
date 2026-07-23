@@ -1,4 +1,5 @@
 {
   "/workspace/page": "app/workspace/page.js",
+  "/workspace/session/[id]/page": "app/workspace/session/[id]/page.js",
   "/voice/page": "app/voice/page.js"
 }

@@ -11,6 +11,11 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
+    "/workspace/session/[id]/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/workspace/session/[id]/page.js"
+    ],
     "/voice/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
