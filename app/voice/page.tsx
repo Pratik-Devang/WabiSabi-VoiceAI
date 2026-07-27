@@ -18,13 +18,17 @@ import {
   finishSession,
   formatClock,
   getActiveSession,
-  updateActiveTranscript
+  updateActiveTranscript,
+  type TranscriptEntry
 } from "@/lib/session-store";
 import { useVoiceSession } from "@/lib/use-voice-session";
 
 export default function VoicePage() {
   const router = useRouter();
   const [userId, setUserId] = useState("");
+  const [contextToken, setContextToken] = useState("");
+  const [initialTranscript, setInitialTranscript] = useState<TranscriptEntry[]>([]);
+  const [returnPath, setReturnPath] = useState("/workspace");
   const [muted, setMuted] = useState(false);
   const [paused, setPaused] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(true);
@@ -37,7 +41,14 @@ export default function VoicePage() {
     error,
     ragQuery,
     connected
-  } = useVoiceSession({ userId, muted, paused, speakerOn });
+  } = useVoiceSession({
+    userId,
+    contextToken,
+    initialTranscript,
+    muted,
+    paused,
+    speakerOn
+  });
 
   useEffect(() => {
     const accountValue = window.localStorage.getItem("vox_account");
@@ -48,15 +59,24 @@ export default function VoicePage() {
 
     try {
       const account = JSON.parse(accountValue) as { email: string };
-      setUserId(account.email);
       const active = getActiveSession() ?? beginSession(account.email);
+      setUserId(`${account.email}:${active.id}`);
+      setContextToken(active.contextToken ?? "");
+      setInitialTranscript(active.transcript);
+      if (active.continuedFromSaved) {
+        setReturnPath(`/workspace/session/${active.id}`);
+      }
       startedAtRef.current = active.startedAt;
 
       const updateDuration = () => {
         setElapsedSeconds(
           Math.max(
             0,
-            Math.floor((Date.now() - new Date(active.startedAt).getTime()) / 1000)
+            Math.floor(
+              (Date.now() -
+                new Date(active.activeStartedAt ?? active.startedAt).getTime()) /
+                1000
+            )
           )
         );
       };
@@ -78,7 +98,7 @@ export default function VoicePage() {
       finishSession(transcript);
       savedRef.current = true;
     }
-    router.push("/workspace");
+    router.push(returnPath);
   }
 
   function exportTranscript() {

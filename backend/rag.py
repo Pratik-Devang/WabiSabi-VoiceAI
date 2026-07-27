@@ -1,8 +1,9 @@
-"""Persistent local RAG store for CSV and PDF knowledge files."""
+"""Persistent local RAG store for recursively discovered CSV/PDF files."""
 
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
 import pathlib
@@ -23,6 +24,7 @@ CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
 SUPPORTED_SUFFIXES = {".csv", ".pdf"}
+INDEX_MANIFEST_NAME = "rag_manifest.json"
 
 _embedding_model: TextEmbedding | None = None
 _chroma_client: Any = None
@@ -100,8 +102,9 @@ def _docs_from_pdf(path: pathlib.Path) -> list[tuple[str, dict]]:
     ]
 
 
-def ingest_file(path: pathlib.Path) -> int:
+def ingest_file(path: pathlib.Path, source: str | None = None) -> int:
     path = pathlib.Path(path)
+    source_name = source or path.name
     if path.suffix.lower() == ".csv":
         docs = _docs_from_csv(path)
     elif path.suffix.lower() == ".pdf":
@@ -109,15 +112,22 @@ def ingest_file(path: pathlib.Path) -> int:
     else:
         return 0
 
+    docs = [
+        (
+            text,
+            {**metadata, "source": source_name},
+        )
+        for text, metadata in docs
+    ]
     collection = get_collection()
-    collection.delete(where={"source": path.name})
+    collection.delete(where={"source": source_name})
     if not docs:
         return 0
 
     texts = [doc[0] for doc in docs]
     metadata = [doc[1] for doc in docs]
     collection.upsert(
-        ids=[f"{path.name}::{item['chunk']}" for item in metadata],
+        ids=[f"{source_name}::{item['chunk']}" for item in metadata],
         embeddings=embed_texts(texts),
         documents=texts,
         metadatas=metadata,
@@ -125,20 +135,100 @@ def ingest_file(path: pathlib.Path) -> int:
     return len(docs)
 
 
-def ingest_directory(directory: str = KNOWLEDGE_BASE_DIR) -> dict:
+def list_knowledge_files(
+    directory: str = KNOWLEDGE_BASE_DIR,
+) -> list[pathlib.Path]:
     base = pathlib.Path(directory)
     if not base.exists():
-        return {"files": 0, "chunks": 0, "file_names": []}
-    files = sorted(
+        return []
+    return sorted(
         path
-        for path in base.iterdir()
+        for path in base.rglob("*")
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
     )
-    chunks = sum(ingest_file(path) for path in files)
+
+
+def knowledge_source_names(
+    directory: str = KNOWLEDGE_BASE_DIR,
+) -> list[str]:
+    base = pathlib.Path(directory)
+    return [
+        path.relative_to(base).as_posix()
+        for path in list_knowledge_files(directory)
+    ]
+
+
+def knowledge_manifest(
+    directory: str = KNOWLEDGE_BASE_DIR,
+) -> list[dict[str, int | str]]:
+    base = pathlib.Path(directory)
+    return [
+        {
+            "source": path.relative_to(base).as_posix(),
+            "size": path.stat().st_size,
+            "modified_ns": path.stat().st_mtime_ns,
+        }
+        for path in list_knowledge_files(directory)
+    ]
+
+
+def _manifest_path() -> pathlib.Path:
+    return pathlib.Path(CHROMA_PERSIST_DIR) / INDEX_MANIFEST_NAME
+
+
+def index_needs_refresh(
+    directory: str = KNOWLEDGE_BASE_DIR,
+) -> bool:
+    try:
+        stored = json.loads(_manifest_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return True
+    return stored != knowledge_manifest(directory)
+
+
+def write_index_manifest(
+    directory: str = KNOWLEDGE_BASE_DIR,
+) -> None:
+    path = _manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(knowledge_manifest(directory), indent=2),
+        encoding="utf-8",
+    )
+
+
+def ingest_directory(directory: str = KNOWLEDGE_BASE_DIR) -> dict:
+    base = pathlib.Path(directory)
+    files = list_knowledge_files(directory)
+    collection = get_collection()
+    existing_ids = collection.get().get("ids") or []
+    if existing_ids:
+        collection.delete(ids=existing_ids)
+
+    chunks = 0
+    errors: list[dict[str, str]] = []
+    empty_files: list[str] = []
+    file_names: list[str] = []
+    for path in files:
+        source = path.relative_to(base).as_posix()
+        try:
+            file_chunks = ingest_file(path, source=source)
+            chunks += file_chunks
+            if file_chunks:
+                file_names.append(source)
+            else:
+                empty_files.append(source)
+        except Exception as exc:
+            log.exception("Failed to ingest %s", source)
+            errors.append({"source": source, "error": str(exc)})
+
+    write_index_manifest(directory)
     return {
-        "files": len(files),
+        "files": len(file_names),
         "chunks": chunks,
-        "file_names": [path.name for path in files],
+        "file_names": file_names,
+        "empty_files": empty_files,
+        "errors": errors,
     }
 
 

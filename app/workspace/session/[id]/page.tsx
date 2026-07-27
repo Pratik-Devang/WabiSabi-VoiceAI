@@ -8,6 +8,8 @@ import {
   Clock3,
   Download,
   FileText,
+  MessageSquareText,
+  Mic2,
   Send,
   Sparkles
 } from "lucide-react";
@@ -17,6 +19,8 @@ import {
   appendSessionTranscript,
   formatDuration,
   getSession,
+  renameSession,
+  resumeSession,
   type TranscriptEntry,
   type VoiceSession
 } from "@/lib/session-store";
@@ -30,6 +34,7 @@ export default function SessionDetailPage() {
   const [session, setSession] = useState<VoiceSession | null>(null);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [voiceStarting, setVoiceStarting] = useState(false);
   const [error, setError] = useState("");
   const [sources, setSources] = useState<string[]>([]);
 
@@ -92,7 +97,14 @@ export default function SessionDetailPage() {
         session.id,
         entries
       );
-      if (updated) setSession(updated);
+      if (updated) {
+        const titled =
+          updated.title === "Text conversation" ||
+          updated.title === "New conversation"
+            ? renameSession(accountEmail, updated.id, clean.slice(0, 48))
+            : updated;
+        setSession(titled ?? updated);
+      }
       setSources(data.sources);
       setQuestion("");
     } catch (caught) {
@@ -101,6 +113,36 @@ export default function SessionDetailPage() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function continueByVoice() {
+    if (!session || voiceStarting) return;
+    setVoiceStarting(true);
+    setError("");
+    try {
+      const response = await fetch(`${apiUrl}/voice/context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript: session.transcript.map(({ speaker, text }) => ({
+            speaker,
+            text
+          }))
+        })
+      });
+      if (!response.ok) throw new Error("Unable to prepare the voice session.");
+      const data = (await response.json()) as { context_token: string };
+      const active = resumeSession(accountEmail, session.id, data.context_token);
+      if (!active) throw new Error("This saved conversation could not be opened.");
+      router.push("/voice");
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Unable to prepare the voice session."
+      );
+      setVoiceStarting(false);
     }
   }
 
@@ -171,6 +213,13 @@ export default function SessionDetailPage() {
               <span>{session.transcript.length} messages</span>
             </header>
             <div className="detail-transcript-feed">
+              {session.transcript.length === 0 && (
+                <div className="empty-text-conversation">
+                  <MessageSquareText size={22} />
+                  <strong>Start your text conversation</strong>
+                  <span>Type your first message in the panel on the right.</span>
+                </div>
+              )}
               {session.transcript.map((line, index) => (
                 <article className={line.speaker === "Vox AI" ? "ai-line" : ""} key={`${line.time}-${index}`}>
                   <div className="speaker-avatar">
@@ -189,19 +238,44 @@ export default function SessionDetailPage() {
             <section className="followup-card session-card">
               <div className="followup-icon"><Sparkles size={20} /></div>
               <p>Continue this conversation</p>
-              <h2>Ask a follow-up.</h2>
-              <span>Vox will use this saved transcript and the insurance knowledge base as context.</span>
+              <h2>Chat with Vox.</h2>
+              <span>Type or use the microphone. Vox will keep this transcript and the insurance knowledge base as context.</span>
               <form onSubmit={askFollowUp}>
-                <textarea
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="Ask about something from this conversation..."
-                  maxLength={2000}
-                  rows={5}
-                />
-                <button type="submit" disabled={!question.trim() || loading}>
-                  {loading ? "Thinking..." : "Ask Vox"} <Send size={15} />
-                </button>
+                <div className="unified-chat-input">
+                  <textarea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    placeholder="Message Vox..."
+                    maxLength={2000}
+                    rows={4}
+                  />
+                  <div className="unified-chat-actions">
+                    <button
+                      className="inline-voice-button"
+                      type="button"
+                      onClick={continueByVoice}
+                      disabled={voiceStarting}
+                      aria-label="Continue by voice"
+                      title="Continue by voice"
+                    >
+                      <Mic2 size={17} />
+                      <span>{voiceStarting ? "Preparing..." : "Voice"}</span>
+                    </button>
+                    <button
+                      className="inline-send-button"
+                      type="submit"
+                      disabled={!question.trim() || loading}
+                    >
+                      {loading ? "Thinking..." : "Send"} <Send size={15} />
+                    </button>
+                  </div>
+                </div>
               </form>
               {error && <div className="followup-error">{error}</div>}
             </section>

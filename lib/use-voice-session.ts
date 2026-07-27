@@ -13,6 +13,8 @@ type VoiceStatus =
 
 type Options = {
   userId: string;
+  contextToken?: string;
+  initialTranscript?: TranscriptEntry[];
   muted: boolean;
   paused: boolean;
   speakerOn: boolean;
@@ -78,12 +80,15 @@ function floatToPcm16(input: Float32Array): Uint8Array {
 
 export function useVoiceSession({
   userId,
+  contextToken,
+  initialTranscript = [],
   muted,
   paused,
   speakerOn
 }: Options) {
   const [status, setStatus] = useState<VoiceStatus>("Connecting...");
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [transcript, setTranscript] =
+    useState<TranscriptEntry[]>(initialTranscript);
   const [error, setError] = useState("");
   const [ragQuery, setRagQuery] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
@@ -117,10 +122,17 @@ export function useVoiceSession({
   }, [muted, paused, speakerOn]);
 
   useEffect(() => {
+    if (initialTranscript.length) {
+      setTranscript((items) => items.length ? items : initialTranscript);
+    }
+  }, [initialTranscript]);
+
+  useEffect(() => {
     if (!userId) return;
     let disposed = false;
     const url = new URL(configuredUrl);
     url.searchParams.set("user_id", userId);
+    if (contextToken) url.searchParams.set("context_token", contextToken);
     const socket = new WebSocket(url);
     socketRef.current = socket;
     setStatus("Connecting...");
@@ -306,7 +318,7 @@ export function useVoiceSession({
       }
       socketRef.current = null;
     };
-  }, [userId]);
+  }, [contextToken, userId]);
 
   return {
     status,

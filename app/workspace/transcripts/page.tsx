@@ -6,6 +6,7 @@ import {
   FileText,
   LayoutGrid,
   LogOut,
+  MessageSquareText,
   Search,
   Settings
 } from "lucide-react";
@@ -121,7 +122,11 @@ export default function TranscriptsPage() {
                   }
                 }}
               >
-                <div className={`recent-icon tone-${index % 3}`}><AudioLines size={17} /></div>
+                <div className={`recent-icon tone-${index % 3}`}>
+                  {session.kind === "voice" || !session.kind
+                    ? <AudioLines size={17} />
+                    : <MessageSquareText size={17} />}
+                </div>
                 <div className="library-title">
                   <h3>{session.title}</h3>
                   <p>
@@ -159,7 +164,7 @@ export default function TranscriptsPage() {
               <div className="library-empty">
                 <FileText size={25} />
                 <strong>{query ? "No matching transcripts" : "No transcripts yet"}</strong>
-                <span>{query ? "Try another search term." : "Complete a voice session to create your first transcript."}</span>
+                <span>{query ? "Try another search term." : "Start a text or voice conversation to create your first transcript."}</span>
               </div>
             )}
           </div>

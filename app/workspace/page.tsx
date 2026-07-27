@@ -1,37 +1,61 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import {
-  ArrowRight,
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useRef,
+  useState
+} from "react";
+import {
   AudioLines,
-  Clock3,
   FileText,
-  Headphones,
   LogOut,
+  Menu,
+  MessageSquare,
   Mic2,
+  PanelLeftClose,
   Plus,
-  Radio,
-  Settings,
-  Sparkles
+  Send,
+  Sparkles,
+  X
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import SessionActions from "@/components/SessionActions";
 import {
-  beginSession,
-  formatDuration,
+  appendSessionTranscript,
+  createConversation,
   getSessions,
+  renameSession,
+  resumeSession,
+  type TranscriptEntry,
   type VoiceSession
 } from "@/lib/session-store";
+
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const suggestions = [
+  "How do I safely maintain the Alfa Laval lobe pump?",
+  "Help me troubleshoot the Markem SDX40 printer",
+  "Explain the FRL maintenance procedure"
+];
 
 type Account = { name: string; email: string };
 
 export default function WorkspacePage() {
   const router = useRouter();
+  const feedEndRef = useRef<HTMLDivElement>(null);
   const [account, setAccount] = useState<Account>({
     name: "Alex Morgan",
     email: "admin@gmail.com"
   });
   const [sessions, setSessions] = useState<VoiceSession[]>([]);
+  const [selected, setSelected] = useState<VoiceSession | null>(null);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [voiceStarting, setVoiceStarting] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const stored = window.localStorage.getItem("vox_account");
@@ -39,7 +63,6 @@ export default function WorkspacePage() {
       router.replace("/");
       return;
     }
-
     try {
       const savedAccount = JSON.parse(stored) as Account;
       setAccount(savedAccount);
@@ -50,171 +73,374 @@ export default function WorkspacePage() {
     }
   }, [router]);
 
+  useEffect(() => {
+    feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [selected?.transcript.length, loading]);
+
+  function reloadSessions(nextSelected?: VoiceSession | null) {
+    setSessions(getSessions(account.email));
+    if (nextSelected !== undefined) setSelected(nextSelected);
+  }
+
+  function openSession(session: VoiceSession) {
+    setSelected(session);
+    setError("");
+    setSidebarOpen(false);
+  }
+
+  function newChat() {
+    setSelected(null);
+    setMessage("");
+    setError("");
+    setSidebarOpen(false);
+  }
+
+  async function sendMessage(event?: FormEvent) {
+    event?.preventDefault();
+    const clean = message.trim();
+    if (!clean || loading) return;
+
+    setLoading(true);
+    setError("");
+    setMessage("");
+
+    const previousTranscript = selected?.transcript ?? [];
+    let target = selected ?? createConversation(account.email);
+    if (target.title === "New conversation" || target.title === "Text conversation") {
+      target = renameSession(account.email, target.id, clean.slice(0, 48)) ?? target;
+    }
+
+    const userEntry: TranscriptEntry = {
+      speaker: "You",
+      text: clean,
+      time: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      })
+    };
+    target =
+      appendSessionTranscript(account.email, target.id, [userEntry]) ?? target;
+    reloadSessions(target);
+
+    try {
+      const response = await fetch(`${apiUrl}/chat/follow-up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: clean,
+          transcript: previousTranscript.map(({ speaker, text }) => ({
+            speaker,
+            text
+          }))
+        })
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          detail?: string;
+        };
+        throw new Error(body.detail || "Vox could not answer right now.");
+      }
+
+      const data = (await response.json()) as { answer: string };
+      const answer: TranscriptEntry = {
+        speaker: "Vox AI",
+        text: data.answer,
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit"
+        })
+      };
+      const updated =
+        appendSessionTranscript(account.email, target.id, [answer]) ?? target;
+      reloadSessions(updated);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Vox could not answer right now."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void sendMessage();
+    }
+  }
+
+  async function startVoice() {
+    if (voiceStarting) return;
+    setVoiceStarting(true);
+    setError("");
+
+    try {
+      const target = selected ?? createConversation(account.email);
+      let contextToken: string | undefined;
+
+      if (target.transcript.length) {
+        const response = await fetch(`${apiUrl}/voice/context`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcript: target.transcript.map(({ speaker, text }) => ({
+              speaker,
+              text
+            }))
+          })
+        });
+        if (!response.ok) {
+          throw new Error("Unable to prepare the voice conversation.");
+        }
+        const data = (await response.json()) as { context_token: string };
+        contextToken = data.context_token;
+      }
+
+      const active = resumeSession(account.email, target.id, contextToken);
+      if (!active) throw new Error("Unable to open this conversation.");
+      router.push("/voice");
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Unable to prepare the voice conversation."
+      );
+      setVoiceStarting(false);
+    }
+  }
+
   function signOut() {
     window.localStorage.removeItem("vox_account");
     router.push("/");
   }
 
-  function startCall() {
-    beginSession(account.email);
-    router.push("/voice");
-  }
-
-  const weekStart = new Date();
-  weekStart.setDate(weekStart.getDate() - 7);
-  const weeklySessions = sessions.filter(
-    (session) => new Date(session.startedAt) >= weekStart
-  );
-  const weeklySeconds = weeklySessions.reduce(
-    (total, session) => total + session.durationSeconds,
-    0
-  );
-  const transcriptLines = sessions.reduce(
-    (total, session) => total + session.transcript.length,
-    0
-  );
+  const initials = account.name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
-    <main className="workspace-page">
-      <header className="workspace-header">
-        <div className="session-brand">
-          <span><AudioLines size={18} /></span>
-          <div><strong>Vox</strong><small>Voice AI workspace</small></div>
+    <main className="assistant-shell">
+      {sidebarOpen && (
+        <button
+          className="assistant-sidebar-scrim"
+          aria-label="Close navigation"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <aside className={`assistant-sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="assistant-sidebar-head">
+          <div className="assistant-brand">
+            <span><AudioLines size={17} /></span>
+            <div><strong>Vox</strong><small>Voice AI workspace</small></div>
+          </div>
+          <button
+            aria-label="Close sidebar"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <PanelLeftClose size={17} />
+          </button>
         </div>
 
-        <nav aria-label="Workspace navigation">
-          <button className="active"><Sparkles size={15} /> Overview</button>
+        <button className="assistant-new-chat" onClick={newChat}>
+          <MessageSquare size={16} /> New chat
+        </button>
+
+        <nav className="assistant-primary-nav" aria-label="Workspace">
           <button onClick={() => router.push("/workspace/transcripts")}>
-            <FileText size={15} /> Transcripts
+            <FileText size={16} /> Library
           </button>
-          <button><Settings size={15} /> Settings</button>
         </nav>
 
-        <div className="account-menu">
-          <div className="account-avatar">AM</div>
-          <div><strong>{account.name}</strong><span>{account.email}</span></div>
-          <button type="button" onClick={signOut} aria-label="Sign out" title="Sign out">
+        <section className="assistant-history">
+          <header>
+            <span>Recent chats</span>
+            <button
+              onClick={() => router.push("/workspace/transcripts")}
+              aria-label="View all transcripts"
+            >
+              View all
+            </button>
+          </header>
+          <div>
+            {sessions.slice(0, 4).map((session) => (
+              <article
+                className={selected?.id === session.id ? "active" : ""}
+                key={session.id}
+              >
+                <button onClick={() => openSession(session)}>
+                  <MessageSquare size={14} />
+                  <span>{session.title}</span>
+                </button>
+                <SessionActions
+                  accountEmail={account.email}
+                  session={session}
+                  onRenamed={(updated) => {
+                    setSessions((items) =>
+                      items.map((item) => item.id === updated.id ? updated : item)
+                    );
+                    if (selected?.id === updated.id) setSelected(updated);
+                  }}
+                  onDeleted={(sessionId) => {
+                    setSessions((items) =>
+                      items.filter((item) => item.id !== sessionId)
+                    );
+                    if (selected?.id === sessionId) setSelected(null);
+                  }}
+                />
+              </article>
+            ))}
+            {sessions.length === 0 && (
+              <p>Your saved conversations will appear here.</p>
+            )}
+          </div>
+        </section>
+
+        <div className="assistant-account">
+          <span className="account-avatar">{initials || "VX"}</span>
+          <div>
+            <strong>{account.name}</strong>
+            <small>{account.email}</small>
+          </div>
+          <button onClick={signOut} aria-label="Sign out" title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
-      </header>
+      </aside>
 
-      <div className="workspace-wrap">
-        <section className="workspace-heading">
-          <div>
-            <p><span /> Voice assistant ready</p>
-            <h1>Good morning, {account.name.split(" ")[0]}.</h1>
-            <span>Start a new conversation or continue from a recent session.</span>
-          </div>
-          <button className="start-call-button" onClick={startCall}>
-            <Mic2 size={18} /> Start voice session <ArrowRight size={16} />
+      <section className={`assistant-main ${selected ? "has-chat" : "is-empty"}`}>
+        <header className="assistant-mobile-header">
+          <button aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
+            <Menu size={19} />
           </button>
-        </section>
+          <div className="assistant-mobile-brand">
+            <AudioLines size={16} /><strong>Vox</strong>
+          </div>
+          {selected ? (
+            <SessionActions
+              accountEmail={account.email}
+              session={selected}
+              onRenamed={(updated) => {
+                setSelected(updated);
+                setSessions((items) =>
+                  items.map((item) => item.id === updated.id ? updated : item)
+                );
+              }}
+              onDeleted={(sessionId) => {
+                setSessions((items) =>
+                  items.filter((item) => item.id !== sessionId)
+                );
+                setSelected(null);
+              }}
+            />
+          ) : <span />}
+        </header>
 
-        <div className="workspace-grid">
-          <section className="start-session-card">
-            <div className="workspace-grid-pattern" />
-            <div className="start-card-top">
-              <span><Radio size={14} /> Voice node online</span>
-              <Headphones size={20} />
-            </div>
-            <div className="start-card-copy">
-              <div className="start-orb"><Mic2 size={30} /></div>
-              <p>New conversation</p>
-              <h2>Ready when you are.</h2>
-              <span>Start a private voice session with live transcription.</span>
-              <button onClick={startCall}>
-                <Plus size={17} /> Start a call
-              </button>
-            </div>
-          </section>
-
-          <section className="workspace-card recent-card">
-            <header>
-              <div><p>History</p><h2>Recent sessions</h2></div>
-              <button onClick={() => router.push("/workspace/transcripts")}>
-                View all <ArrowRight size={14} />
-              </button>
-            </header>
-            <div className="recent-list">
-              {sessions.slice(0, 4).map((session, index) => (
+        <div className="assistant-content">
+          {selected ? (
+            <div className="assistant-chat-feed">
+              <header>
+                <p>Saved conversation</p>
+                <h1>{selected.title}</h1>
+              </header>
+              {selected.transcript.map((line, index) => (
                 <article
-                  key={session.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => router.push(`/workspace/session/${session.id}`)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      router.push(`/workspace/session/${session.id}`);
-                    }
-                  }}
+                  className={line.speaker === "You" ? "from-user" : "from-vox"}
+                  key={`${line.time}-${index}`}
                 >
-                  <div className={`recent-icon tone-${index}`}><AudioLines size={17} /></div>
+                  {line.speaker === "Vox AI" && (
+                    <span className="assistant-message-icon">
+                      <Sparkles size={15} />
+                    </span>
+                  )}
                   <div>
-                    <h3>{session.title}</h3>
-                    <p>
-                      {new Date(session.startedAt).toLocaleString([], {
-                        dateStyle: "medium",
-                        timeStyle: "short"
-                      })}
-                    </p>
+                    {line.speaker === "Vox AI" && <strong>Vox AI</strong>}
+                    <p>{line.text}</p>
                   </div>
-                  <div className="recent-meta">
-                    <span>{formatDuration(session.durationSeconds)}</span>
-                    <span>{session.transcript.length} lines</span>
-                  </div>
-                  <SessionActions
-                    accountEmail={account.email}
-                    session={session}
-                    onRenamed={(updated) =>
-                      setSessions((items) =>
-                        items.map((item) => item.id === updated.id ? updated : item)
-                      )
-                    }
-                    onDeleted={(sessionId) =>
-                      setSessions((items) =>
-                        items.filter((item) => item.id !== sessionId)
-                      )
-                    }
-                  />
                 </article>
               ))}
-              {sessions.length === 0 && (
-                <div className="empty-sessions">
-                  <AudioLines size={22} />
-                  <strong>No saved sessions yet</strong>
-                  <span>Your completed calls and transcripts will appear here.</span>
-                </div>
+              {loading && (
+                <article className="from-vox">
+                  <span className="assistant-message-icon">
+                    <Sparkles size={15} />
+                  </span>
+                  <div><strong>Vox AI</strong><p className="assistant-thinking">Thinking...</p></div>
+                </article>
               )}
+              <div ref={feedEndRef} />
             </div>
-          </section>
-
-          <section className="workspace-card account-stat">
-            <span className="stat-icon coral"><Clock3 size={19} /></span>
-            <div>
-              <p>This week</p>
-              <strong>{formatDuration(weeklySeconds)}</strong>
-              <span>
-                Across {weeklySessions.length} voice {weeklySessions.length === 1 ? "session" : "sessions"}
-              </span>
+          ) : (
+            <div className="assistant-empty-state">
+              <span><Sparkles size={23} /></span>
+              <h1>Where should we begin?</h1>
+              <p>Ask Vox about any machine, procedure, or manual in your knowledge base.</p>
             </div>
-          </section>
+          )}
 
-          <section className="workspace-card account-stat">
-            <span className="stat-icon teal"><FileText size={19} /></span>
-            <div>
-              <p>Transcripts</p>
-              <strong>{transcriptLines} lines</strong>
-              <span>Captured automatically</span>
-            </div>
-          </section>
+          <div className="assistant-composer-zone">
+            {error && (
+              <div className="assistant-composer-error">
+                {error}
+                <button onClick={() => setError("")} aria-label="Dismiss error">
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+            <form className="assistant-composer" onSubmit={sendMessage}>
+              <button
+                type="button"
+                className="assistant-add-button"
+                aria-label="Start a new chat"
+                title="New chat"
+                onClick={newChat}
+              >
+                <Plus size={19} />
+              </button>
+              <textarea
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                onKeyDown={handleComposerKey}
+                placeholder="Ask Vox"
+                rows={1}
+                maxLength={2000}
+                aria-label="Message Vox"
+              />
+              <button
+                type="button"
+                className="assistant-voice-button"
+                onClick={startVoice}
+                disabled={voiceStarting}
+                aria-label="Start voice conversation"
+                title="Start voice conversation"
+              >
+                <Mic2 size={19} />
+              </button>
+              <button
+                type="submit"
+                className="assistant-send-button"
+                disabled={!message.trim() || loading}
+                aria-label="Send message"
+              >
+                <Send size={17} />
+              </button>
+            </form>
 
-          <section className="workspace-tip">
-            <Sparkles size={17} />
-            <div><p>Vox tip</p><strong>Your transcripts stay attached to your account, so ending a call never signs you out.</strong></div>
-          </section>
+            {!selected && (
+              <div className="assistant-suggestions">
+                {suggestions.map((suggestion) => (
+                  <button key={suggestion} onClick={() => setMessage(suggestion)}>
+                    <Sparkles size={14} /> {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
+            <small>Vox answers from your indexed manuals. Verify safety-critical steps.</small>
+          </div>
         </div>
-      </div>
+      </section>
     </main>
   );
 }

@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -41,12 +42,13 @@ COMPRESSION_TARGET_TOKENS = int(
 )
 
 active_sessions: TTLCache[str, str] = TTLCache(maxsize=10000, ttl=7200)
+voice_contexts: TTLCache[str, str] = TTLCache(maxsize=2000, ttl=1800)
 kb_state = {"files": [], "chunks": 0}
 
 
 def bootstrap_rag() -> None:
     collection = rag.get_collection()
-    if collection.count() == 0:
+    if collection.count() == 0 or rag.index_needs_refresh():
         result = rag.ingest_directory()
         kb_state["files"] = result["file_names"]
     else:
@@ -133,6 +135,20 @@ class FollowUpResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class VoiceContextRequest(BaseModel):
+    transcript: list[FollowUpLine] = Field(default_factory=list, max_length=250)
+
+
+@app.post("/voice/context")
+async def create_voice_context(payload: VoiceContextRequest) -> dict[str, str]:
+    transcript = "\n".join(
+        f"{line.speaker}: {line.text}" for line in payload.transcript
+    )
+    token = secrets.token_urlsafe(24)
+    voice_contexts[token] = transcript
+    return {"context_token": token}
+
+
 @app.post("/chat/follow-up", response_model=FollowUpResponse)
 async def chat_follow_up(payload: FollowUpRequest) -> FollowUpResponse:
     """Answer against one saved conversation and persist on the client."""
@@ -149,8 +165,10 @@ async def chat_follow_up(payload: FollowUpRequest) -> FollowUpResponse:
     prompt = (
         "Continue the saved Vox conversation below. Answer the follow-up in a "
         "concise, conversational style. Preserve context from the transcript. "
-        "For insurance facts, use the retrieved knowledge and do not invent "
-        "details. If the evidence does not answer the question, say so.\n\n"
+        "For factual questions about equipment, operation, maintenance, "
+        "troubleshooting, safety, or procedures, use the retrieved manuals and "
+        "do not invent details. If the manuals do not answer the question, say "
+        "that the available knowledge base does not contain the answer.\n\n"
         f"SAVED CONVERSATION:\n{conversation or '(empty)'}\n\n"
         f"RETRIEVED KNOWLEDGE:\n{retrieved or '(no matching records)'}\n\n"
         f"FOLLOW-UP QUESTION:\n{payload.question}"
@@ -176,16 +194,28 @@ async def chat_follow_up(payload: FollowUpRequest) -> FollowUpResponse:
     return FollowUpResponse(answer=answer, sources=sources)
 
 
-def system_instruction() -> str:
-    return (
-        "You are Vox, a concise and warm voice assistant for term life insurance. "
+def system_instruction(saved_context: str = "") -> str:
+    instruction = (
+        "You are Vox, a concise and practical voice assistant for industrial "
+        "equipment, operating procedures, maintenance, and troubleshooting. "
         "Speak naturally and keep answers short unless the user asks for detail. "
         "Respond in Hindi when the user speaks Hindi and Indian English when they "
         "speak English. Avoid markdown because every answer is spoken aloud. "
-        "Use search_knowledge_base whenever a question may depend on plans, "
-        "eligibility, riders, policy terms, or claims. Do not guess or mention "
-        "the retrieval system. Base factual insurance answers on retrieved records."
+        "Before answering any factual question about a machine, component, "
+        "procedure, setting, alarm, maintenance task, or safety requirement, call "
+        "search_knowledge_base. Base those answers only on the retrieved manuals. "
+        "Never invent a specification or procedure. If no relevant manual passage "
+        "is returned, clearly say that the available manuals do not contain the "
+        "answer. Do not mention embeddings, retrieval, or the search tool."
     )
+    if saved_context:
+        instruction += (
+            "\n\nThe user is continuing a saved conversation. Use the transcript "
+            "below as prior conversational context. Do not repeat or summarize it "
+            "unless asked; continue naturally from it.\n\nSAVED TRANSCRIPT:\n"
+            f"{saved_context[-18000:]}"
+        )
+    return instruction
 
 
 SEARCH_KB_TOOL = types.Tool(
@@ -193,8 +223,9 @@ SEARCH_KB_TOOL = types.Tool(
         types.FunctionDeclaration(
             name="search_knowledge_base",
             description=(
-                "Search internal insurance plans, eligibility rules, riders, "
-                "policy terms, and claims records."
+                "Search the uploaded equipment manuals, operating instructions, "
+                "maintenance procedures, troubleshooting guidance, and safety "
+                "information. Use before answering factual equipment questions."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -211,7 +242,9 @@ SEARCH_KB_TOOL = types.Tool(
 )
 
 
-def live_config(session_handle: Optional[str]) -> types.LiveConnectConfig:
+def live_config(
+    session_handle: Optional[str], saved_context: str = ""
+) -> types.LiveConnectConfig:
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -222,7 +255,7 @@ def live_config(session_handle: Optional[str]) -> types.LiveConnectConfig:
             ),
             language_code="en-IN",
         ),
-        system_instruction=system_instruction(),
+        system_instruction=system_instruction(saved_context),
         tools=[SEARCH_KB_TOOL],
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -247,7 +280,10 @@ def live_config(session_handle: Optional[str]) -> types.LiveConnectConfig:
 
 
 async def run_live_session(
-    websocket: WebSocket, user_id: str, session_handle: Optional[str]
+    websocket: WebSocket,
+    user_id: str,
+    session_handle: Optional[str],
+    saved_context: str = "",
 ) -> None:
     if not GEMINI_API_KEY:
         await websocket.send_json(
@@ -262,7 +298,7 @@ async def run_live_session(
     try:
         async with client.aio.live.connect(
             model=LIVE_MODEL,
-            config=live_config(session_handle),
+            config=live_config(session_handle, saved_context),
         ) as session:
 
             async def receive_client() -> None:
@@ -405,16 +441,26 @@ async def run_live_session(
     except Exception:
         if session_handle:
             active_sessions.pop(user_id, None)
-            await run_live_session(websocket, user_id, None)
+            await run_live_session(websocket, user_id, None, saved_context)
             return
         raise
 
 
 @app.websocket("/ws/voice")
-async def voice_endpoint(websocket: WebSocket, user_id: str) -> None:
+async def voice_endpoint(
+    websocket: WebSocket,
+    user_id: str,
+    context_token: Optional[str] = None,
+) -> None:
     await websocket.accept()
+    saved_context = voice_contexts.pop(context_token, "") if context_token else ""
     try:
-        await run_live_session(websocket, user_id, active_sessions.get(user_id))
+        await run_live_session(
+            websocket,
+            user_id,
+            active_sessions.get(user_id),
+            saved_context,
+        )
     except WebSocketDisconnect:
         pass
     except Exception:

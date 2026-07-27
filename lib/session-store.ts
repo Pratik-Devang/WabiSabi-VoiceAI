@@ -8,8 +8,12 @@ export type VoiceSession = {
   id: string;
   accountEmail: string;
   title: string;
+  kind?: "voice" | "text" | "mixed";
   startedAt: string;
   endedAt?: string;
+  activeStartedAt?: string;
+  continuedFromSaved?: boolean;
+  contextToken?: string;
   durationSeconds: number;
   transcript: TranscriptEntry[];
 };
@@ -98,6 +102,26 @@ export function deleteSession(
   return true;
 }
 
+export function createConversation(accountEmail: string): VoiceSession {
+  const now = new Date().toISOString();
+  const session: VoiceSession = {
+    id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`,
+    accountEmail,
+    title: "New conversation",
+    kind: "mixed",
+    startedAt: now,
+    endedAt: now,
+    durationSeconds: 0,
+    transcript: []
+  };
+  const sessions = readJson<VoiceSession[]>(SESSIONS_KEY, []);
+  window.localStorage.setItem(
+    SESSIONS_KEY,
+    JSON.stringify([session, ...sessions])
+  );
+  return session;
+}
+
 export function beginSession(accountEmail: string): VoiceSession {
   const existing = readJson<VoiceSession | null>(ACTIVE_SESSION_KEY, null);
   if (existing?.accountEmail === accountEmail) return existing;
@@ -106,12 +130,31 @@ export function beginSession(accountEmail: string): VoiceSession {
     id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`,
     accountEmail,
     title: "Voice conversation",
+    kind: "voice",
     startedAt: new Date().toISOString(),
+    activeStartedAt: new Date().toISOString(),
     durationSeconds: 0,
     transcript: []
   };
   window.localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
   return session;
+}
+
+export function resumeSession(
+  accountEmail: string,
+  sessionId: string,
+  contextToken?: string
+): VoiceSession | null {
+  const saved = getSession(accountEmail, sessionId);
+  if (!saved) return null;
+  const active: VoiceSession = {
+    ...saved,
+    activeStartedAt: new Date().toISOString(),
+    continuedFromSaved: true,
+    contextToken
+  };
+  window.localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(active));
+  return active;
 }
 
 export function getActiveSession(): VoiceSession | null {
@@ -135,13 +178,24 @@ export function finishSession(transcript: TranscriptEntry[]): VoiceSession | nul
   const completed: VoiceSession = {
     ...active,
     title:
-      transcript.find((entry) => entry.speaker === "You")?.text.slice(0, 48) ||
-      "Voice conversation",
+      active.title !== "Voice conversation" && active.title !== "New conversation"
+        ? active.title
+        : transcript.find((entry) => entry.speaker === "You")?.text.slice(0, 48) ||
+          "Voice conversation",
     endedAt: endedAt.toISOString(),
-    durationSeconds: Math.max(
-      1,
-      Math.round((endedAt.getTime() - new Date(active.startedAt).getTime()) / 1000)
-    ),
+    activeStartedAt: undefined,
+    continuedFromSaved: undefined,
+    contextToken: undefined,
+    durationSeconds:
+      active.durationSeconds +
+      Math.max(
+        1,
+        Math.round(
+          (endedAt.getTime() -
+            new Date(active.activeStartedAt ?? active.startedAt).getTime()) /
+            1000
+        )
+      ),
     transcript
   };
   const sessions = readJson<VoiceSession[]>(SESSIONS_KEY, []);
